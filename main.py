@@ -258,22 +258,39 @@ def buscar_leads_cascata(nicho, regiao, limit):
     return sorted(resultados, key=lambda x: x["score"], reverse=True)
 
 
-def _resposta_valida(texto):
+def _resposta_valida(texto, exigir_mensagem=False):
     if not texto or len(texto) < 40:
         return False
-    bandeiras = ["user safety", "i cannot", "i can't assist", "as an ai"]
-    return not any(b in texto.lower() for b in bandeiras)
+    bandeiras = [
+        "user safety", "i cannot", "i can't assist", "as an ai",
+        "we need to", "we must", "let me think", "we have to",
+        "must classify", "the format", "should be", "i'll", "i will",
+    ]
+    texto_lower = texto.lower()
+    if any(b in texto_lower for b in bandeiras):
+        return False
+    if exigir_mensagem and "mensagem:" not in texto_lower:
+        return False
+    return True
 
 
 def _limpar_raciocinio(texto):
     """Alguns modelos (Qwen3, DeepSeek com thinking) vazam o raciocínio interno
-    antes da resposta real. Corta tudo antes do formato esperado (ex: 'LEAD:')."""
+    antes da resposta real, e às vezes citam o próprio formato dentro do raciocínio.
+    Por isso procura a ÚLTIMA ocorrência de 'DIAGNÓSTICO:', que tende a marcar
+    o início da resposta final de verdade."""
     if not texto:
         return texto
-    for marcador in ["LEAD:", "DIAGNÓSTICO:", "DIAGNOSTICO:"]:
-        idx = texto.upper().find(marcador)
-        if idx > 0:
-            return texto[idx:].strip()
+    up = texto.upper()
+    idx = up.rfind("DIAGNÓSTICO:")
+    if idx == -1:
+        idx = up.rfind("DIAGNOSTICO:")
+    if idx != -1:
+        # Inclui o "LEAD:" logo antes, se existir por perto
+        antes = up.rfind("LEAD:", max(0, idx - 60), idx)
+        if antes != -1:
+            idx = antes
+        return texto[idx:].strip()
     return texto.strip()
 
 
@@ -364,17 +381,17 @@ Nunca inventes informações.
     ]
 
     erros = []
-    for modelo in ["deepseek/deepseek-chat-v3-0324:free", "qwen/qwen3-30b-a3b:free",
-                   "openrouter/free", "google/gemma-4-31b-it:free"]:
+    for modelo in ["google/gemma-4-31b-it:free", "deepseek/deepseek-chat-v3-0324:free",
+                   "openrouter/free", "qwen/qwen3-30b-a3b:free"]:
         try:
             payload = {
-                "model": modelo, "messages": messages, "temperature": 0.4, "max_tokens": 700,
+                "model": modelo, "messages": messages, "temperature": 0.4, "max_tokens": 1200,
                 "reasoning": {"exclude": True},
             }
-            res = requests.post(OPENROUTER_API_URL, headers=headers, json=payload, timeout=25)
+            res = requests.post(OPENROUTER_API_URL, headers=headers, json=payload, timeout=30)
             if res.status_code == 200:
                 texto = _limpar_raciocinio(res.json()['choices'][0]['message']['content'].strip())
-                if _resposta_valida(texto):
+                if _resposta_valida(texto, exigir_mensagem=True):
                     return texto, None
                 erros.append(f"{modelo}: resposta inválida")
             else:
@@ -499,7 +516,7 @@ def dica_lead(req: DicaRequest, user=Depends(get_current_user)):
     Dá uma sugestão curta e prática (máximo 3 frases) do que fazer a seguir com este lead,
     considerando o status e o tempo parado. Responde em Português, direto ao ponto.
     """
-    for modelo in ["deepseek/deepseek-chat-v3-0324:free", "qwen/qwen3-30b-a3b:free", "openrouter/free"]:
+    for modelo in ["google/gemma-4-31b-it:free", "deepseek/deepseek-chat-v3-0324:free", "openrouter/free"]:
         try:
             payload = {
                 "model": modelo, "messages": [{"role": "user", "content": prompt}],
