@@ -265,6 +265,18 @@ def _resposta_valida(texto):
     return not any(b in texto.lower() for b in bandeiras)
 
 
+def _limpar_raciocinio(texto):
+    """Alguns modelos (Qwen3, DeepSeek com thinking) vazam o raciocínio interno
+    antes da resposta real. Corta tudo antes do formato esperado (ex: 'LEAD:')."""
+    if not texto:
+        return texto
+    for marcador in ["LEAD:", "DIAGNÓSTICO:", "DIAGNOSTICO:"]:
+        idx = texto.upper().find(marcador)
+        if idx > 0:
+            return texto[idx:].strip()
+    return texto.strip()
+
+
 SYSTEM_PROMPT = """
 Tu és a IA oficial da plataforma MIRA.
 
@@ -355,10 +367,13 @@ Nunca inventes informações.
     for modelo in ["deepseek/deepseek-chat-v3-0324:free", "qwen/qwen3-30b-a3b:free",
                    "openrouter/free", "google/gemma-4-31b-it:free"]:
         try:
-            payload = {"model": modelo, "messages": messages, "temperature": 0.4, "max_tokens": 700}
+            payload = {
+                "model": modelo, "messages": messages, "temperature": 0.4, "max_tokens": 700,
+                "reasoning": {"exclude": True},
+            }
             res = requests.post(OPENROUTER_API_URL, headers=headers, json=payload, timeout=25)
             if res.status_code == 200:
-                texto = res.json()['choices'][0]['message']['content'].strip()
+                texto = _limpar_raciocinio(res.json()['choices'][0]['message']['content'].strip())
                 if _resposta_valida(texto):
                     return texto, None
                 erros.append(f"{modelo}: resposta inválida")
@@ -486,10 +501,13 @@ def dica_lead(req: DicaRequest, user=Depends(get_current_user)):
     """
     for modelo in ["deepseek/deepseek-chat-v3-0324:free", "qwen/qwen3-30b-a3b:free", "openrouter/free"]:
         try:
-            payload = {"model": modelo, "messages": [{"role": "user", "content": prompt}]}
+            payload = {
+                "model": modelo, "messages": [{"role": "user", "content": prompt}],
+                "reasoning": {"exclude": True},
+            }
             res = requests.post(OPENROUTER_API_URL, headers=headers, json=payload, timeout=25)
             if res.status_code == 200:
-                texto = res.json()['choices'][0]['message']['content'].strip()
+                texto = _limpar_raciocinio(res.json()['choices'][0]['message']['content'].strip())
                 if _resposta_valida(texto):
                     return {"texto": texto}
         except Exception:
