@@ -18,6 +18,12 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from bs4 import BeautifulSoup
 from supabase import create_client
+from docx import Document
+from reportlab.lib.pagesizes import letter
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+from reportlab.lib.styles import getSampleStyleSheet
+import csv
+import io
 
 # --- CONFIGURAÇÃO ---
 app = FastAPI(title="Mira API")
@@ -530,3 +536,60 @@ def dica_lead(req: DicaRequest, user=Depends(get_current_user)):
         except Exception:
             continue
     raise HTTPException(status_code=502, detail="Não foi possível gerar a dica agora.")
+
+
+# --- EXPORTAÇÃO: WORD E PDF ---
+def _limpar_para_pdf(texto):
+    if not texto:
+        return "N/A"
+    return str(texto).replace("&", "e").replace("<", "").replace(">", "")
+
+
+@app.post("/api/export/word")
+def exportar_word(req: ExportRequest, user=Depends(get_current_user)):
+    from docx import Document
+
+    doc = Document()
+    doc.add_heading(f"Relatório de Prospeção: {req.nicho} em {req.regiao}", 0)
+    for item in req.leads:
+        doc.add_heading(item.get("nome", "N/A"), level=2)
+        doc.add_paragraph(f"• Contacto: {item.get('telefone', '')} | Email: {item.get('email', '')}")
+        doc.add_paragraph(f"• Score Comercial: {item.get('score', '')}")
+        doc.add_paragraph(f"• Análise IA:\n{item.get('analise') or 'Não analisado.'}")
+        doc.add_paragraph("-" * 30)
+
+    buffer = BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+    return StreamingResponse(
+        buffer,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": f"attachment; filename=leads_{req.nicho}_{req.regiao}.docx"},
+    )
+
+
+@app.post("/api/export/pdf")
+def exportar_pdf(req: ExportRequest, user=Depends(get_current_user)):
+    from reportlab.lib.pagesizes import letter
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+    from reportlab.lib.styles import getSampleStyleSheet
+
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter)
+    styles = getSampleStyleSheet()
+    elementos = [Paragraph(f"Relatório Estratégico: {req.nicho} em {req.regiao}", styles['Title']), Spacer(1, 15)]
+    for item in req.leads:
+        nome = _limpar_para_pdf(item.get("nome", ""))
+        elementos.append(Paragraph(f"<b>{nome}</b> (Score: {item.get('score', '')})", styles['Heading2']))
+        elementos.append(Paragraph(f"<b>Telefone:</b> {_limpar_para_pdf(item.get('telefone', ''))}", styles['Normal']))
+        elementos.append(Paragraph(f"<b>E-mail:</b> {_limpar_para_pdf(item.get('email', ''))}", styles['Normal']))
+        analise = _limpar_para_pdf(item.get('analise') or 'Não gerado.')
+        elementos.append(Paragraph(f"<b>Análise IA:</b> {analise}", styles['Normal']))
+        elementos.append(Spacer(1, 10))
+    doc.build(elementos)
+    buffer.seek(0)
+    return StreamingResponse(
+        buffer,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename=leads_{req.nicho}_{req.regiao}.pdf"},
+    )
